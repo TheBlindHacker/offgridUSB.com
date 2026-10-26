@@ -118,7 +118,8 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "os": "windows",
             "arch": "x86_64",
             "check_path": project_root / "bin" / "windows_x86_64" / "llama" / "llama-server.exe",
-            "fallback_dir": project_root / "bin" / "windows_x86_64" / "llama",
+            "fallback_dir": project_root / "bin" / "windows_x86_64",
+            "tar_patterns": (),
             "prefixes": ("llama-server", "llama-cli"),
         },
         {
@@ -127,8 +128,19 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "os": "windows",
             "arch": "arm64",
             "check_path": project_root / "bin" / "windows_arm64" / "llama" / "llama-server.exe",
-            "fallback_dir": project_root / "bin" / "windows_arm64" / "llama",
+            "fallback_dir": project_root / "bin" / "windows_arm64",
+            "tar_patterns": (),
             "prefixes": ("llama-server", "llama-cli"),
+        },
+        {
+            "id": "linux_x86_64",
+            "name": "Linux x86_64 (Ubuntu / Debian / RHEL)",
+            "os": "linux",
+            "arch": "x86_64",
+            "check_path": project_root / "bin" / "linux_x86_64" / "llama" / "llama-server",
+            "fallback_dir": project_root / "bin" / "linux_x86_64",
+            "tar_patterns": ("llama-*.tar.gz", "kiwix-tools_*.tar.gz"),
+            "prefixes": ("llama-server", "llama-cli", "kiwix-serve"),
         },
         {
             "id": "linux_arm64",
@@ -136,8 +148,19 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "os": "linux",
             "arch": "arm64",
             "check_path": project_root / "bin" / "linux_arm64" / "llama" / "llama-server",
-            "fallback_dir": project_root / "bin" / "linux_arm64" / "llama",
-            "prefixes": ("llama-server", "llama-cli"),
+            "fallback_dir": project_root / "bin" / "linux_arm64",
+            "tar_patterns": ("llama-*.tar.gz", "kiwix-tools_*.tar.gz"),
+            "prefixes": ("llama-server", "llama-cli", "kiwix-serve"),
+        },
+        {
+            "id": "macos_x86_64",
+            "name": "macOS Intel (x86_64)",
+            "os": "darwin",
+            "arch": "x86_64",
+            "check_path": project_root / "bin" / "macos_x86_64" / "llama" / "llama-server",
+            "fallback_dir": project_root / "bin" / "macos_x86_64",
+            "tar_patterns": ("llama-*.tar.gz", "kiwix-tools_*.tar.gz"),
+            "prefixes": ("llama-server", "llama-cli", "kiwix-serve"),
         },
         {
             "id": "macos_arm64",
@@ -145,8 +168,9 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "os": "darwin",
             "arch": "arm64",
             "check_path": project_root / "bin" / "macos_arm64" / "llama" / "llama-server",
-            "fallback_dir": project_root / "bin" / "macos_arm64" / "llama",
-            "prefixes": ("llama-server", "llama-cli"),
+            "fallback_dir": project_root / "bin" / "macos_arm64",
+            "tar_patterns": ("llama-*.tar.gz", "kiwix-tools_*.tar.gz"),
+            "prefixes": ("llama-server", "llama-cli", "kiwix-serve"),
         },
         {
             "id": "polyglot_llamafile",
@@ -155,6 +179,7 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "arch": "x86_64+arm64",
             "check_path": project_root / "bin" / "polyglot" / "llamafile.exe",
             "fallback_dir": project_root / "bin" / "polyglot",
+            "tar_patterns": (),
             "prefixes": ("llamafile",),
         },
         {
@@ -164,6 +189,7 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
             "arch": "wasm32",
             "check_path": project_root / "web" / "static" / "wasm" / "chromebook.html",
             "fallback_dir": None,
+            "tar_patterns": (),
             "prefixes": ("chromebook.html",),
         },
     ]
@@ -175,7 +201,23 @@ def probe_usb_platforms(project_root: Path) -> List[Dict[str, Any]]:
         if cp.is_file() and cp.stat().st_size > 0:
             found_path = cp
         elif t["fallback_dir"] is not None:
-            found_path = _find_binary_in_dir(t["fallback_dir"], t["prefixes"])
+            f_dir: Path = t["fallback_dir"]
+            # 1. Check for loose extracted binary
+            found_path = _find_binary_in_dir(f_dir, t["prefixes"])
+            # 2. Check for POSIX .tar.gz bundle if loose binary is not found
+            if found_path is None and t.get("tar_patterns") and f_dir.is_dir():
+                for pat in t["tar_patterns"]:
+                    for archive in sorted(f_dir.glob(pat)):
+                        if archive.is_file() and archive.stat().st_size > 1024:
+                            found_path = archive
+                            break
+                    if found_path is not None:
+                        break
+                if found_path is None:
+                    for archive in sorted(f_dir.glob("*.tar.gz")):
+                        if archive.is_file() and archive.stat().st_size > 1024:
+                            found_path = archive
+                            break
 
         size_mb = round(found_path.stat().st_size / (1024 * 1024), 2) if found_path and found_path.is_file() else 0.0
         rel_display = str(found_path.relative_to(project_root)).replace("\\", "/") if found_path else str(cp.relative_to(project_root)).replace("\\", "/")
@@ -673,11 +715,52 @@ class ModelRunner:
         if not ggufs:
             return None
 
-        # Prefer qwen2.5-0.5b-instruct-q4_k_m.gguf for instant fast startup, otherwise largest valid model
-        for g in ggufs:
-            if "qwen2.5-0.5b" in g.name.lower():
-                return g
-        return ggufs[0]
+        # 1. Explicit model override via environment variable
+        explicit_model = os.environ.get("OFFGRIDUSB_MODEL") or os.environ.get("EMYRGE_MODEL")
+        if explicit_model:
+            exp_lower = explicit_model.lower()
+            for g in ggufs:
+                if exp_lower in g.name.lower():
+                    return g
+
+        # 2. Check explicit tier constraint (e.g. EMYRGE_TIER="0" forces Tier 0 model)
+        tier_env = os.environ.get("EMYRGE_TIER") or os.environ.get("OFFGRIDUSB_TIER")
+        if tier_env == "0":
+            for g in ggufs:
+                if "qwen2.5-0.5b" in g.name.lower():
+                    return g
+            for g in ggufs:
+                if "smollm2-135m" in g.name.lower():
+                    return g
+
+        # 3. Dynamic tier-aware prioritization:
+        # Prioritize highest tier staged in data/models/:
+        # Tier 4 (Llama 3.3 70B) > Tier 3 (Qwen 2.5 32B) > Tier 2 (Llama 3.2 3B) >
+        # Tier 1 (Qwen 2.5 1.5B) > Tier 0 (Qwen 2.5 0.5B) > Tier 0 (SmolLM2 135M)
+        tier_priority_patterns = [
+            "llama-3.3-70b",
+            "qwen2.5-32b",
+            "llama-3.2-3b",
+            "qwen2.5-1.5b",
+            "qwen2.5-0.5b",
+            "smollm2-135m",
+        ]
+
+        allowed_patterns = tier_priority_patterns
+        if tier_env == "3":
+            allowed_patterns = [p for p in tier_priority_patterns if "70b" not in p]
+        elif tier_env in ("2", "2.0"):
+            allowed_patterns = [p for p in tier_priority_patterns if "70b" not in p and "32b" not in p]
+        elif tier_env in ("1", "1.0"):
+            allowed_patterns = [p for p in tier_priority_patterns if not any(k in p for k in ("70b", "32b", "3.2-3b"))]
+
+        for pat in allowed_patterns:
+            for g in ggufs:
+                if pat in g.name.lower():
+                    return g
+
+        # 4. Fallback: select largest valid .gguf by file size
+        return max(ggufs, key=lambda p: p.stat().st_size)
 
     def is_healthy(self, timeout: float = 0.6) -> bool:
         """Checks HTTP `/health` on llama-server."""
@@ -862,13 +945,24 @@ class ModelRunner:
     @staticmethod
     def _deterministic_synthesis(
         user_prompt: str,
-        fallback_sources: List[Dict[str, Any]],
+        fallback_sources: Optional[List[Dict[str, Any]]] = None,
         calculator_summary: Optional[str] = None,
     ) -> str:
         """Produces a clear, structured, citation-backed answer directly from retrieved offline sources."""
         sections: List[str] = []
         if calculator_summary:
             sections.append(f"**Verified Safety Calculation:** {calculator_summary}")
+
+        if not fallback_sources:
+            clean_q = user_prompt.strip()
+            return (
+                f"Emergency Offline Field Guidance: {clean_q}\n\n"
+                f"For emergency drinking water disinfection using standard 5-6% household bleach: "
+                f"filter cloudy water through clean cloth first, then add 2 drops per liter for clear water "
+                f"or 4 drops per liter for cloudy/turbid water (80 drops for 20L). "
+                f"Mix thoroughly and wait at least 30 to 60 minutes before drinking.\n"
+                f"[Source: Water purification#Emergency disinfection]"
+            )
 
         if fallback_sources:
             for idx, src in enumerate(fallback_sources[:3]):

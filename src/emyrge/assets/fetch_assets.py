@@ -19,10 +19,13 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
+import urllib.error
 import urllib.request
 
 ZIM_MAGICS = (0x044D495A, 0x5A494D04)
@@ -119,6 +122,48 @@ def _stream_download(url: str, dest: Path) -> None:
     part_path = dest.with_suffix(dest.suffix + ".part")
     existing_bytes = part_path.stat().st_size if part_path.is_file() else 0
 
+    curl_bin = shutil.which("curl")
+    if curl_bin:
+        curl_cmd = [
+            curl_bin,
+            "-L",
+            "-f",
+            "--retry", "5",
+            "--retry-connrefused",
+            "--retry-delay", "2",
+            "--connect-timeout", "30",
+            "-A", USER_AGENT,
+        ]
+        if existing_bytes > 0:
+            curl_cmd.extend(["-C", "-"])
+        curl_cmd.extend(["-o", str(part_path), url])
+        proc = subprocess.run(curl_cmd)
+        if proc.returncode != 0:
+            if proc.returncode == 33 and existing_bytes > 0:
+                print(f"    [WARN] Server rejected byte range (curl exit code 33). Retrying clean: {url}", flush=True)
+                if part_path.is_file():
+                    part_path.unlink()
+                clean_cmd = [
+                    curl_bin,
+                    "-L",
+                    "-f",
+                    "--retry", "5",
+                    "--retry-connrefused",
+                    "--retry-delay", "2",
+                    "--connect-timeout", "30",
+                    "-A", USER_AGENT,
+                    "-o", str(part_path),
+                    url,
+                ]
+                proc = subprocess.run(clean_cmd)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"Download failed for {url} (curl exit code {proc.returncode}). "
+                    f"Partial file preserved at: {part_path}"
+                )
+        part_path.replace(dest)
+        return
+
     headers = {"User-Agent": USER_AGENT}
     if existing_bytes > 0:
         headers["Range"] = f"bytes={existing_bytes}-"
@@ -153,14 +198,19 @@ def _stream_download(url: str, dest: Path) -> None:
                         else:
                             print(f"    ... {mb_done:,.1f} MB downloaded", flush=True)
                         last_print = now
-    except Exception:
-        # Fallback to basic urlretrieve if Range header wasn't accepted by mirror
-        if existing_bytes > 0:
+    except urllib.error.HTTPError as exc:
+        # Only discard partial download if the server explicitly rejected the Range header (HTTP 416)
+        if exc.code == 416 and existing_bytes > 0:
             if part_path.is_file():
                 part_path.unlink()
-            urllib.request.urlretrieve(url, str(part_path))
-        else:
-            raise
+            print(f"    [WARN] Server rejected byte range (HTTP 416). Restarting clean: {url}", flush=True)
+            _stream_download(url, dest)
+            return
+        raise
+    except Exception as exc:
+        # Preserve .part file on all other transient network failures
+        print(f"    [WARN] Download interrupted ({exc}). Partial file preserved at: {part_path}", flush=True)
+        raise
 
     part_path.replace(dest)
 

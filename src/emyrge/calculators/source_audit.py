@@ -73,6 +73,10 @@ class AuditReport:
     flagged_claims: List[FlaggedClaim]
     annotated_text: str
 
+    @property
+    def is_grounded(self) -> bool:
+        return not any(f.status == ClaimStatus.DISCREPANCY.value for f in self.flagged_claims)
+
     def __getitem__(self, item: str) -> Any:
         """Enables dictionary subscripting (e.g. audit['is_clean'])."""
         if hasattr(self, item):
@@ -113,6 +117,10 @@ class CalculatorRouteResult:
     suggested_ui_widget: Optional[str] = None
 
     def __getitem__(self, item: str) -> Any:
+        if item == "type":
+            return self.route
+        if item in ("params", "extracted_parameters"):
+            return self.extracted_parameters
         if hasattr(self, item):
             return getattr(self, item)
         raise KeyError(item)

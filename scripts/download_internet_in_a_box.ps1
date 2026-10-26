@@ -33,6 +33,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
+[System.IO.Directory]::SetCurrentDirectory($Root)
 
 function Test-FileMagicHeader {
     param(
@@ -45,7 +46,7 @@ function Test-FileMagicHeader {
     if ($item.Length -lt 1024) { return $false }
     if ($Expected -eq "ANY") { return $true }
 
-    $fs = [System.IO.File]::OpenRead($FilePath)
+    $fs = [System.IO.File]::OpenRead($item.FullName)
     try {
         $buf = New-Object byte[] 4
         $read = $fs.Read($buf, 0, 4)
@@ -91,18 +92,28 @@ function Invoke-ResumableDownload {
     Write-Host "         Target  : $Dest" -ForegroundColor Gray
 
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-        $curlArgs = @("-L", "--fail", "--retry", "3", "--retry-delay", "2", "-A", "OffGridUSB-Provisioner/0.1")
+        $curlArgs = @(
+            "-L", "-f",
+            "--retry", "5",
+            "--retry-connrefused",
+            "--retry-delay", "2",
+            "--connect-timeout", "30",
+            "-A", "OffGridUSB-Provisioner/0.1"
+        )
         if (Test-Path $partFile) {
             $curlArgs += @("-C", "-")
         }
         $curlArgs += @("-o", $partFile, $Url)
         & curl.exe @curlArgs
         if ($LASTEXITCODE -ne 0) {
-            # Retry clean without resume if server rejected byte-range resume
-            Remove-Item $partFile -Force -ErrorAction SilentlyContinue
-            & curl.exe -L --fail --retry 3 -A "OffGridUSB-Provisioner/0.1" -o $partFile $Url
+            # Only remove partFile if server rejected byte-range resume (curl exit code 33 = HTTP 416 Range Not Satisfiable)
+            if ($LASTEXITCODE -eq 33) {
+                Write-Warning "Server rejected byte-range resume (curl exit code 33 / HTTP 416). Retrying clean download..."
+                Remove-Item $partFile -Force -ErrorAction SilentlyContinue
+                & curl.exe -L -f --retry 5 --retry-connrefused --retry-delay 2 --connect-timeout 30 -A "OffGridUSB-Provisioner/0.1" -o $partFile $Url
+            }
             if ($LASTEXITCODE -ne 0) {
-                throw "Download failed for $Url (curl exit code $LASTEXITCODE)"
+                throw "Download failed for $Url (curl exit code $LASTEXITCODE). Partial file preserved at $partFile for resumption."
             }
         }
     } else {
@@ -352,7 +363,7 @@ if (-not $EnginesOnly -and -not $ModelsOnly) {
     $zimManifest = Get-Content $zimManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($z in $zimManifest.archives) {
         if ([int]$z.tier -le $Tier) {
-            $destPath = Join-Path "data\zim" $z.filename
+            $destPath = Join-Path $Root (Join-Path "data\zim" $z.filename)
             Invoke-ResumableDownload -Url $z.url -Dest $destPath -MagicCheck "ZIM" -MinBytes 102400
         }
     }
@@ -373,7 +384,7 @@ if (-not $EnginesOnly -and -not $ZimOnly) {
             if ($Tier -eq 0 -and -not $IncludeUltraMicro -and $m.id -eq "smollm2-135m-q4") {
                 continue
             }
-            $destPath = Join-Path "data\models" $m.filename
+            $destPath = Join-Path $Root (Join-Path "data\models" $m.filename)
             Invoke-ResumableDownload -Url $m.url -Dest $destPath -MagicCheck "GGUF" -MinBytes 1048576
         }
     }

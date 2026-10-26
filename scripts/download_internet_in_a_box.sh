@@ -117,13 +117,26 @@ fetch_url() {
     local part="${dest}.part"
     echo "  [DL]   ${url} -> ${dest}"
     if command -v curl >/dev/null 2>&1; then
+        local curl_args=("-L" "-f" "--retry" "5" "--retry-connrefused" "--retry-delay" "2" "--connect-timeout" "30" "-A" "OffGridUSB-Provisioner/0.1")
         if [[ -f "${part}" ]]; then
-            curl -L --fail --retry 3 -C - -A "OffGridUSB-Provisioner/0.1" -o "${part}" "${url}" || {
+            curl "${curl_args[@]}" -C - -o "${part}" "${url}"
+            local rc=$?
+            if [[ ${rc} -eq 33 ]]; then
+                echo "  [WARN] Server rejected byte-range resume (exit code 33 / HTTP 416). Retrying clean..."
                 rm -f "${part}"
-                curl -L --fail --retry 3 -A "OffGridUSB-Provisioner/0.1" -o "${part}" "${url}"
-            }
+                curl "${curl_args[@]}" -o "${part}" "${url}" || {
+                    echo "[ERROR] Download failed for ${url} (curl exit code $?)" >&2
+                    return 1
+                }
+            elif [[ ${rc} -ne 0 ]]; then
+                echo "[ERROR] Download failed for ${url} (curl exit code ${rc}). Partial file preserved at ${part}." >&2
+                return ${rc}
+            fi
         else
-            curl -L --fail --retry 3 -A "OffGridUSB-Provisioner/0.1" -o "${part}" "${url}"
+            curl "${curl_args[@]}" -o "${part}" "${url}" || {
+                echo "[ERROR] Download failed for ${url} (curl exit code $?). Partial file preserved at ${part}." >&2
+                return $?
+            }
         fi
     elif command -v wget >/dev/null 2>&1; then
         wget -c -U "OffGridUSB-Provisioner/0.1" -O "${part}" "${url}"

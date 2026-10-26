@@ -53,6 +53,9 @@ class MemoryVault:
         self.db_path_str = str(db_path)
         if self.db_path_str != ":memory:":
             p = Path(self.db_path_str)
+            if p.is_dir() or self.db_path_str.endswith(("/", "\\")):
+                p = p / "memory.sqlite"
+                self.db_path_str = str(p)
             p.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
@@ -212,7 +215,7 @@ class MemoryVault:
                     "mode": "harness",
                     "model_tier": 0,
                     "verified": 0,
-                    "needs_distillation": 1,
+                    "needs_distillation": 0,
                     "timestamp": "2026-10-24T14:20:00Z",
                 },
             ]
@@ -358,6 +361,48 @@ class MemoryVault:
 
             self.conn.commit()
             return row_id
+
+    def save_interaction(
+        self,
+        query: str,
+        answer: str,
+        citations: Optional[List[Any]] = None,
+        **kwargs: Any,
+    ) -> int:
+        """Alias for store_interaction providing flexible keyword arguments for test compatibility."""
+        return self.store_interaction(
+            query=query,
+            answer=answer,
+            citations=citations,
+            mode=kwargs.get("mode", "harness"),
+            model_tier=kwargs.get("model_tier", 1),
+            verified=kwargs.get("verified", True),
+            needs_distillation=kwargs.get("needs_distillation", True),
+            session_id=kwargs.get("session_id", "default"),
+            timestamp=kwargs.get("timestamp"),
+        )
+
+    def close(self) -> None:
+        """Closes the underlying SQLite connection."""
+        with self._lock:
+            if hasattr(self, "conn") and self.conn:
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+                self.conn = None
+
+    def __enter__(self) -> MemoryVault:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> Dict[str, Any]:
