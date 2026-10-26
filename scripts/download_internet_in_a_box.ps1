@@ -38,25 +38,40 @@ Set-Location $Root
 function Test-FileMagicHeader {
     param(
         [string]$FilePath,
-        [ValidateSet("ZIM", "GGUF", "ANY")]
+        [ValidateSet("ZIM", "GGUF", "TAR_GZ", "ZIP", "EXE", "ANY")]
         [string]$Expected = "ANY"
     )
     if (-not (Test-Path $FilePath)) { return $false }
     $item = Get-Item $FilePath
-    if ($item.Length -lt 1024) { return $false }
-    if ($Expected -eq "ANY") { return $true }
+    if ($item.Length -lt 16) { return $false }
 
     $fs = [System.IO.File]::OpenRead($item.FullName)
     try {
         $buf = New-Object byte[] 4
         $read = $fs.Read($buf, 0, 4)
         if ($read -lt 4) { return $false }
+        # Disallow zero-filled corrupted sectors from uncommitted writes
+        if ($buf[0] -eq 0 -and $buf[1] -eq 0 -and $buf[2] -eq 0 -and $buf[3] -eq 0) {
+            return $false
+        }
         if ($Expected -eq "GGUF") {
             return ($buf[0] -eq 0x47 -and $buf[1] -eq 0x47 -and $buf[2] -eq 0x55 -and $buf[3] -eq 0x46)
         }
         if ($Expected -eq "ZIM") {
             # Little-endian ZIM\x04: 0x5A 0x49 0x4D 0x04
             return ($buf[0] -eq 0x5A -and $buf[1] -eq 0x49 -and $buf[2] -eq 0x4D -and $buf[3] -eq 0x04)
+        }
+        if ($Expected -eq "TAR_GZ") {
+            # GZIP magic: 0x1F 0x8B
+            return ($buf[0] -eq 0x1F -and $buf[1] -eq 0x8B)
+        }
+        if ($Expected -eq "ZIP") {
+            # PKzip magic: 0x50 0x4B
+            return ($buf[0] -eq 0x50 -and $buf[1] -eq 0x4B)
+        }
+        if ($Expected -eq "EXE") {
+            # DOS PE / MZ magic: 0x4D 0x5A
+            return ($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A)
         }
         return $true
     } finally {
@@ -68,7 +83,7 @@ function Invoke-ResumableDownload {
     param(
         [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][string]$Dest,
-        [ValidateSet("ZIM", "GGUF", "ANY")]
+        [ValidateSet("ZIM", "GGUF", "TAR_GZ", "ZIP", "EXE", "ANY")]
         [string]$MagicCheck = "ANY",
         [long]$MinBytes = 65536
     )
@@ -152,9 +167,14 @@ function Show-VerifyReport {
     Write-Host "`n  [Portable Cross-Platform Engines]" -ForegroundColor Yellow
     foreach ($ec in $engineChecks) {
         $exists = Test-Path $ec.Path
-        $status = if ($exists) { "[READY]" } else { "[MISSING]" }
-        $color  = if ($exists) { "Green" } else { "DarkYellow" }
-        Write-Host ("    {0,-10} {1,-36} ({2})" -f $status, $ec.Name, $ec.Path) -ForegroundColor $color
+        $valid = $false
+        if ($exists) {
+            $expectedMagic = if ($ec.Path -like "*.tar.gz") { "TAR_GZ" } elseif ($ec.Path -like "*.exe") { "EXE" } else { "ANY" }
+            $valid = Test-FileMagicHeader -FilePath $ec.Path -Expected $expectedMagic
+        }
+        $status = if (-not $exists) { "[MISSING]" } elseif ($valid) { "[READY]" } else { "[BAD HEADER]" }
+        $color  = if ($valid) { "Green" } elseif (-not $exists) { "DarkYellow" } else { "Red" }
+        Write-Host ("    {0,-12} {1,-36} ({2})" -f $status, $ec.Name, $ec.Path) -ForegroundColor $color
     }
 
     Write-Host "`n  [Staged Internet-in-a-Box OpenZIM Archives (data\zim)]" -ForegroundColor Yellow
@@ -284,10 +304,11 @@ import site
     }
 
     # 1B. Portable Kiwix Tools (kiwix-serve.exe -- Internet-in-a-Box ZIM Server)
-    if (-not (Test-Path "bin\windows_x86_64\kiwix\kiwix-serve.exe")) {
+    if (-not (Test-Path "bin\windows_x86_64\kiwix\kiwix-serve.exe") -or -not (Test-FileMagicHeader -FilePath "bin\windows_x86_64\kiwix\kiwix-serve.exe" -Expected "EXE")) {
         Invoke-ResumableDownload `
             -Url "https://download.kiwix.org/release/kiwix-tools/kiwix-tools_win-x86_64-3.8.1.zip" `
-            -Dest "tmp_dl\kiwix_win.zip"
+            -Dest "tmp_dl\kiwix_win.zip" `
+            -MagicCheck "ZIP"
         Expand-Archive -Path "tmp_dl\kiwix_win.zip" -DestinationPath "tmp_dl\kiwix_win_ext" -Force
         Get-ChildItem -Path "tmp_dl\kiwix_win_ext" -Recurse -File | Copy-Item -Destination "bin\windows_x86_64\kiwix" -Force
         Write-Host "  [OK]   Extracted Windows kiwix-serve.exe" -ForegroundColor Green
@@ -296,10 +317,11 @@ import site
     }
 
     # 1C. Windows x86_64 & ARM64 llama.cpp (llama-server.exe)
-    if (-not (Test-Path "bin\windows_x86_64\llama\llama-server.exe")) {
+    if (-not (Test-Path "bin\windows_x86_64\llama\llama-server.exe") -or -not (Test-FileMagicHeader -FilePath "bin\windows_x86_64\llama\llama-server.exe" -Expected "EXE")) {
         Invoke-ResumableDownload `
             -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-win-cpu-x64.zip" `
-            -Dest "tmp_dl\llama_win_x64.zip"
+            -Dest "tmp_dl\llama_win_x64.zip" `
+            -MagicCheck "ZIP"
         Expand-Archive -Path "tmp_dl\llama_win_x64.zip" -DestinationPath "tmp_dl\llama_win_x64_ext" -Force
         Get-ChildItem -Path "tmp_dl\llama_win_x64_ext" -Recurse -File | Copy-Item -Destination "bin\windows_x86_64\llama" -Force
         Write-Host "  [OK]   Extracted Windows x64 llama-server.exe" -ForegroundColor Green
@@ -308,10 +330,11 @@ import site
     }
 
     if (-not $CurrentOsOnly) {
-        if (-not (Test-Path "bin\windows_arm64\llama\llama-server.exe")) {
+        if (-not (Test-Path "bin\windows_arm64\llama\llama-server.exe") -or -not (Test-FileMagicHeader -FilePath "bin\windows_arm64\llama\llama-server.exe" -Expected "EXE")) {
             Invoke-ResumableDownload `
                 -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-win-cpu-arm64.zip" `
-                -Dest "tmp_dl\llama_win_arm64.zip"
+                -Dest "tmp_dl\llama_win_arm64.zip" `
+                -MagicCheck "ZIP"
             Expand-Archive -Path "tmp_dl\llama_win_arm64.zip" -DestinationPath "tmp_dl\llama_win_arm64_ext" -Force
             Get-ChildItem -Path "tmp_dl\llama_win_arm64_ext" -Recurse -File | Copy-Item -Destination "bin\windows_arm64\llama" -Force
             Write-Host "  [OK]   Extracted Windows ARM64 llama-server.exe" -ForegroundColor Green
@@ -320,35 +343,44 @@ import site
         # Keep POSIX .tar.gz archives intact on USB so Linux, Raspberry Pi & macOS preserve .so/.dylib symlinks off exFAT/FAT32!
         Invoke-ResumableDownload `
             -Url "https://download.kiwix.org/release/kiwix-tools/kiwix-tools_linux-x86_64-3.8.1.tar.gz" `
-            -Dest "bin\linux_x86_64\kiwix-tools_linux-x86_64.tar.gz"
+            -Dest "bin\linux_x86_64\kiwix-tools_linux-x86_64.tar.gz" `
+            -MagicCheck "TAR_GZ"
         Invoke-ResumableDownload `
             -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-ubuntu-x64.tar.gz" `
-            -Dest "bin\linux_x86_64\llama-ubuntu-x64.tar.gz"
+            -Dest "bin\linux_x86_64\llama-ubuntu-x64.tar.gz" `
+            -MagicCheck "TAR_GZ"
 
         Invoke-ResumableDownload `
             -Url "https://download.kiwix.org/release/kiwix-tools/kiwix-tools_linux-aarch64-3.8.1.tar.gz" `
-            -Dest "bin\linux_arm64\kiwix-tools_linux-aarch64.tar.gz"
+            -Dest "bin\linux_arm64\kiwix-tools_linux-aarch64.tar.gz" `
+            -MagicCheck "TAR_GZ"
         Invoke-ResumableDownload `
             -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-ubuntu-arm64.tar.gz" `
-            -Dest "bin\linux_arm64\llama-ubuntu-arm64.tar.gz"
+            -Dest "bin\linux_arm64\llama-ubuntu-arm64.tar.gz" `
+            -MagicCheck "TAR_GZ"
 
         Invoke-ResumableDownload `
             -Url "https://download.kiwix.org/release/kiwix-tools/kiwix-tools_macos-arm64-3.8.1.tar.gz" `
-            -Dest "bin\macos_arm64\kiwix-tools_macos.tar.gz"
+            -Dest "bin\macos_arm64\kiwix-tools_macos.tar.gz" `
+            -MagicCheck "TAR_GZ"
         Invoke-ResumableDownload `
             -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-macos-arm64.tar.gz" `
-            -Dest "bin\macos_arm64\llama-macos-arm64.tar.gz"
+            -Dest "bin\macos_arm64\llama-macos-arm64.tar.gz" `
+            -MagicCheck "TAR_GZ"
 
         Invoke-ResumableDownload `
             -Url "https://download.kiwix.org/release/kiwix-tools/kiwix-tools_macos-x86_64-3.8.1.tar.gz" `
-            -Dest "bin\macos_x86_64\kiwix-tools_macos-x86_64.tar.gz"
+            -Dest "bin\macos_x86_64\kiwix-tools_macos-x86_64.tar.gz" `
+            -MagicCheck "TAR_GZ"
         Invoke-ResumableDownload `
             -Url "https://github.com/ggml-org/llama.cpp/releases/download/b11867/llama-b11867-bin-macos-x64.tar.gz" `
-            -Dest "bin\macos_x86_64\llama-macos-x64.tar.gz"
+            -Dest "bin\macos_x86_64\llama-macos-x64.tar.gz" `
+            -MagicCheck "TAR_GZ"
 
         Invoke-ResumableDownload `
             -Url "https://github.com/mozilla-ai/llamafile/releases/download/0.10.6/llamafile-0.10.6-thin" `
-            -Dest "bin\polyglot\llamafile.exe"
+            -Dest "bin\polyglot\llamafile.exe" `
+            -MagicCheck "EXE"
     }
 }
 

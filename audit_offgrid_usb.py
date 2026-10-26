@@ -699,7 +699,7 @@ class OffGridUSBAuditor:
                 with tarfile.open(t_path, "r:*") as tf:
                     members = [m for m in tf.getmembers() if m.isreg()]
                     for m in members:
-                        if m.name.endswith((".md", ".txt", ".h", ".c", ".dylib", ".so")):
+                        if m.name.endswith((".md", ".txt", ".h", ".c", ".dylib", ".so")) or "LICENSE" in m.name or "COPYING" in m.name:
                             continue
                         f_extracted = tf.extractfile(m)
                         if not f_extracted:

@@ -449,7 +449,11 @@ class KiwixRunner:
             if not binary:
                 return False
 
-            cmd = [str(binary), "--port", str(self.port), "--address", self.host] + [str(z) for z in zims]
+            lib_xml = self.project_root / "data" / "library.xml"
+            if lib_xml.is_file():
+                cmd = [os.path.normpath(str(binary)), "--library", os.path.normpath(str(lib_xml)), "--port", str(self.port), "--address", self.host]
+            else:
+                cmd = [os.path.normpath(str(binary)), "-k", "--port", str(self.port), "--address", self.host] + [os.path.normpath(str(z)) for z in zims]
             kwargs: Dict[str, Any] = {
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
@@ -823,9 +827,9 @@ class ModelRunner:
                 cmd = llamafile_args if os.name == "nt" else ["/bin/sh"] + llamafile_args
             else:
                 cmd = [
-                    str(binary),
+                    os.path.normpath(str(binary)),
                     "-m",
-                    str(model),
+                    os.path.normpath(str(model)),
                     "--host",
                     self.host,
                     "--port",
