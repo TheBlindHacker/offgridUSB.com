@@ -23,7 +23,9 @@ PITCH_CHEATSHEET.md
 # Build Artifacts & Local Test Caches
 # (Note: scripts/, docs/, and root .bat/.sh/.command USB tools ARE tracked!)
 # ------------------------------------------------------------------------------
-tests/
+# source unit tests ARE tracked (swarm/harness tests)
+tests/*
+!tests/*.py
 pytest.ini
 tmp_dl/
 build/

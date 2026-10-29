@@ -66,7 +66,11 @@ class ClusterCoordinator:
         nodes: Optional[List[Dict[str, Any]]] = None,
         simulate_drop: bool = False,
     ) -> Dict[str, Any]:
-        raw_nodes = [dict(n) for n in (nodes if nodes else DEFAULT_SWARM_NODES)]
+        # Treat an explicitly-passed empty node list as intentional (local fallback),
+        # and only fall back to the default fixture when no node list was provided at all.
+        if nodes is None:
+            nodes = DEFAULT_SWARM_NODES
+        raw_nodes = [dict(n) for n in nodes]
 
         # Normalize node attributes gracefully
         normalized_nodes: List[Dict[str, Any]] = []
