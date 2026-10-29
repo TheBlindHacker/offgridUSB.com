@@ -43,24 +43,24 @@
       "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_top_mini_2026-09.zim"
     },
     {
-      "id": "khanacademy-en",
-      "name": "Khan Academy Offline STEM & K-12 Complete Pack",
-      "filename": "khanacademy_en_all_2024-05.zim",
+      "id": "wikibooks-en-stem",
+      "name": "Wikibooks STEM & K-12 Complete Textbooks (Math, Physics, Computing)",
+      "filename": "wikibooks_en_all_maxi_2026-04.zim",
       "tier": 2,
       "category": "education_stem",
-      "size_bytes": 4831838208,
-      "size_mb": 4608.0,
-      "url": "https://download.kiwix.org/zim/videos/khanacademy_en_all_2024-05.zim"
+      "size_bytes": 6177865115,
+      "size_mb": 5891.7,
+      "url": "https://download.kiwix.org/zim/wikibooks/wikibooks_en_all_maxi_2026-04.zim"
     },
     {
       "id": "wikipedia-en-nopic-50gb",
       "name": "Full English Wikipedia (No-Pictures Compact 50GB USB Edition)",
-      "filename": "wikipedia_en_all_nopic_2024-06.zim",
+      "filename": "wikipedia_en_all_nopic_2026-06.zim",
       "tier": 2,
       "category": "encyclopedia",
-      "size_bytes": 53687091200,
-      "size_mb": 51200.0,
-      "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic_2024-06.zim"
+      "size_bytes": 52690706555,
+      "size_mb": 50249.8,
+      "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic_2026-06.zim"
     },
     {
       "id": "wikipedia-en-maxi-110gb",

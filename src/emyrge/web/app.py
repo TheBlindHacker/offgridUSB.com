@@ -307,6 +307,7 @@ class EmyrgeRuntime:
 
         return {
             "ok": True,
+            "status": "ready" if (llm_st.get("llm_ready") or llm_st.get("llm_running")) else "standby",
             "hardware": hw,
             "services": {
                 "llm_running": llm_st["llm_running"],
@@ -354,20 +355,39 @@ class EmyrgeRuntime:
         p = params or {}
 
         if ctype == "water":
-            vol = _to_float(p.get("volume_liters", p.get("liters", p.get("volume"))), 5.0) or 5.0
             if p.get("volume_gallons") not in (None, ""):
-                vol = WaterCalculator.gallons_to_liters(float(p["volume_gallons"]))
-            turbid = _to_bool(p.get("is_turbid", p.get("turbid")), False)
+                try:
+                    vol_gal = float(p["volume_gallons"])
+                except (TypeError, ValueError):
+                    raise ValueError("Water volume must be strictly positive")
+                if vol_gal <= 0.0:
+                    raise ValueError("Water volume must be strictly positive")
+                vol = WaterCalculator.gallons_to_liters(vol_gal)
+            else:
+                raw_vol = p.get("volume_liters", p.get("liters", p.get("volume")))
+                if raw_vol is None or raw_vol == "":
+                    vol = 5.0
+                else:
+                    vol = _to_float(raw_vol)
+                    if vol is None or vol <= 0.0:
+                        raise ValueError("Water volume must be strictly positive")
+            turbid = _to_bool(p.get("is_turbid", p.get("turbid", p.get("clarity"))), False)
             cloudy = _to_bool(p.get("is_cloudy", p.get("cloudy")), False)
             method = str(p.get("method") or "bleach").strip().lower()
-            conc = _to_float(p.get("concentration_pct", p.get("concentration")), 6.0) or 6.0
+            conc_raw = p.get("concentration_pct", p.get("concentration"))
+            if conc_raw is None or conc_raw == "":
+                conc = 6.0
+            else:
+                conc = _to_float(conc_raw)
+                if conc is None or conc <= 0.0 or conc > 15.0:
+                    raise ValueError("Concentration must be between 1% and 15%")
             elev = _to_float(p.get("elevation_meters", p.get("elevation")), 0.0) or 0.0
             res = WaterCalculator.calculate(
                 {
-                    "volume_liters": max(0.1, vol),
+                    "volume_liters": vol,
                     "is_turbid": turbid,
                     "method": method,
-                    "concentration_pct": min(15.0, max(1.0, conc)),
+                    "concentration_pct": conc,
                     "elevation_meters": max(0.0, elev),
                     "is_cloudy": cloudy,
                 }
@@ -663,6 +683,7 @@ class EmyrgeRuntime:
             return {
                 "ok": True,
                 "query": "",
+                "total": len(zim_list) + len(khan_list),
                 "zim_results": zim_list,
                 "khan_results": khan_list,
                 "kiwix_url": kiwix_url,
@@ -699,6 +720,7 @@ class EmyrgeRuntime:
         return {
             "ok": True,
             "query": q,
+            "total": len(zim_out) + len(khan_out),
             "zim_results": zim_out,
             "khan_results": khan_out,
             "kiwix_url": kiwix_url,
@@ -725,11 +747,30 @@ class EmyrgeRuntime:
             reply = f"LOG SAVED: {note}"
         elif lower.startswith("@calc "):
             rest = cmd[6:].strip()
+            kv_params: Dict[str, Any] = {}
+            tokens = rest.split()
+            cmd_type = tokens[0].lower() if tokens else "water"
+            for t in tokens[1:]:
+                if "=" in t:
+                    k, v = t.split("=", 1)
+                    k = k.strip().lower()
+                    v = v.strip().lower()
+                    if v in ("true", "yes", "1"):
+                        kv_params[k] = True
+                    elif v in ("false", "no", "0"):
+                        kv_params[k] = False
+                    else:
+                        try:
+                            kv_params[k] = float(v) if "." in v else int(v)
+                        except ValueError:
+                            kv_params[k] = v
             route_info = CalculatorRouter.analyze_query(rest)
-            ctype = route_info.route if route_info.route != "general" else (rest.split()[0].lower() if rest else "water")
+            merged_params = dict(route_info.extracted_parameters)
+            merged_params.update(kv_params)
+            ctype = cmd_type if (cmd_type in ("water", "medicine", "solar", "electrical", "telecom", "structural")) else (route_info.route if route_info.route != "general" else "water")
             try:
-                res = self.run_calculator(ctype, route_info.extracted_parameters)
-                reply = res.get("summary") or str(res)
+                res = self.run_calculator(ctype, merged_params)
+                reply = res.get("summary") or res.get("mesh_summary") or str(res)
             except Exception as e:
                 reply = f"CALC ERR: {e}"
         else:
@@ -742,6 +783,7 @@ class EmyrgeRuntime:
             "ok": True,
             "command": cmd,
             "raw_reply": reply,
+            "message": reply,
             "packets": packets,
         }
 
@@ -901,7 +943,8 @@ class EmyrgeHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json(200, res)
                 return
 
-            if path in ("/api/calc", "/api/calculators"):
+            clean_path = path.rstrip("/")
+            if clean_path in ("/api/calc", "/api/calculators", "/api/calculator/water_purification"):
                 ctype = str(body.get("type", body.get("calculator", "water")))
                 params = body.get("params") if isinstance(body.get("params"), dict) else {
                     k: v for k, v in body.items() if k not in ("type", "calculator")
@@ -910,7 +953,7 @@ class EmyrgeHTTPHandler(BaseHTTPRequestHandler):
                     calc_res = self.runtime.run_calculator(ctype, params)
                     self._send_json(200, {"ok": True, "type": ctype, "result": calc_res})
                 except ValueError as ve:
-                    self._send_json(200, {"ok": False, "type": ctype, "error": str(ve)})
+                    self._send_json(400, {"ok": False, "type": ctype, "error": str(ve)})
                 return
 
             if path == "/api/knowledge/khan/evaluate":

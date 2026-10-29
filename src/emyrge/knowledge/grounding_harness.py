@@ -134,17 +134,25 @@ class GroundedSource:
         }
 
 
-@dataclass
-class GroundingContext:
+class GroundingContext(list):
     """Assembled context payload injected into the adaptive prompt pipeline."""
-    query: str
-    sources: List[GroundedSource] = field(default_factory=list)
-    combined_context_text: str = ""
+
+    def __init__(
+        self,
+        query: str = "",
+        sources: Optional[List[GroundedSource]] = None,
+        combined_context_text: str = "",
+    ) -> None:
+        srcs = list(sources or [])
+        super().__init__(srcs)
+        self.query = query
+        self.sources = srcs
+        self.combined_context_text = combined_context_text
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "query": self.query,
-            "sources": [s.to_dict() for s in self.sources],
+            "sources": [s.to_dict() if hasattr(s, "to_dict") else s for s in self],
             "combined_context_text": self.combined_context_text,
         }
 
@@ -267,17 +275,35 @@ class GroundingHarness:
 
     def __init__(
         self,
-        zim_reader: Optional[ZimReader] = None,
+        zim_reader: Optional[Any] = None,
         khan_curriculum: Optional[KhanCurriculum] = None,
         model_runner: Optional[Any] = None,
         source_audit: Optional[Any] = None,
         memory_db: Optional[Any] = None,
     ) -> None:
-        self.zim_reader: Optional[ZimReader] = zim_reader
-        self.khan_curriculum: Optional[KhanCurriculum] = khan_curriculum
-        self.model_runner: Optional[Any] = model_runner
-        self.source_audit: Optional[Any] = source_audit or SourceAudit
-        self.memory_db: Optional[Any] = memory_db
+        if zim_reader is not None and not isinstance(zim_reader, ZimReader) and hasattr(zim_reader, "project_root"):
+            cfg = zim_reader
+            from emyrge.knowledge.seed_corpus import DEFAULT_ZIM_ARTICLES
+            self.zim_reader: Optional[ZimReader] = ZimReader(data_dir=cfg.zim_dir, fallback_articles=DEFAULT_ZIM_ARTICLES)
+            self.khan_curriculum: Optional[KhanCurriculum] = KhanCurriculum(cfg.project_root)
+            self.model_runner: Optional[Any] = model_runner
+            self.source_audit: Optional[Any] = source_audit or SourceAudit
+            self.memory_db: Optional[Any] = memory_db
+        else:
+            self.zim_reader = zim_reader
+            self.khan_curriculum = khan_curriculum
+            self.model_runner = model_runner
+            self.source_audit = source_audit or SourceAudit
+            self.memory_db = memory_db
+
+    @staticmethod
+    def resolve_prompting_strategy(tier: Any) -> Any:
+        """Determines the adaptive prompt strategy based on hardware capability tier."""
+        from emyrge.core.config import HardwareTier, PromptingStrategy
+        tier_val = getattr(tier, "value", tier)
+        if tier in (HardwareTier.TIER_0, HardwareTier.THIN_CLIENT, 0, "0", "tier_0"):
+            return PromptingStrategy.SEARCH_THEN_SUMMARIZE
+        return PromptingStrategy.TOOL_CALLING
 
     def retrieve_context(self, query: str, limit: int = 5) -> GroundingContext:
         """Retrieves relevant passages across ZIM reader, Khan curriculum, and verified memory notes."""
